@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*_kicad/
+*_kicad.zip
+.DS_Store
+*.kicad_prl
+*-backups/
