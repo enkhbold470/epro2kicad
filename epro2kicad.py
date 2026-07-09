@@ -27,7 +27,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # ---------------------------------------------------------------------------
 # KiCad discovery
@@ -73,12 +73,74 @@ def find_kicad_python() -> str:
 # ---------------------------------------------------------------------------
 
 
-def normalize_epro(src: Path, dst: Path) -> dict:
-    """Repack an .epro with normalized line endings.
+# Record types whose net-name field KiCad reads with FindNet(): type -> index
+EPCB_NET_FIELD = {
+    "VIA": 3, "LINE": 3, "ARC": 3, "POLY": 3, "FILL": 3, "POUR": 3,
+    "PAD": 3, "PAD_NET": 3, "TEARDROP": 2,
+}
+EPCB_HEADER_TYPES = ("DOCTYPE", "HEAD", "CANVAS", "LAYER", "ACTIVE_LAYER", "RULE")
 
-    Some EasyEDA Pro exports contain CR/LF line endings in their JSON Lines
-    documents, which crashes KiCad's parser (std::out_of_range). Repacking
-    with clean newlines fixes it. Returns the parsed project.json.
+
+def fix_epcb(text: str) -> str:
+    """Rewrite an .epcb document so KiCad 8/9's parser accepts it.
+
+    Newer EasyEDA Pro exports (editorVersion 2.2+) changed the format in two
+    ways that break KiCad's importer before KiCad 10.0.4:
+
+    - RULE values moved into an object keyed by sub-rule id, e.g.
+      ["mil",{"1":[10,10,1000]}]. KiCad 8/9 expects the flat legacy form and
+      aborts with "type must be number, but is array" (gitlab kicad#24303).
+    - NET records were dropped (nets are now implicit in PAD_NET/track
+      fields). KiCad 9 only creates board nets from NET records, so every
+      pad and track imports as <no net>. KiCad 10 creates nets on demand.
+
+    Both forms are converted back to the legacy shape, which every KiCad
+    version understands.
+    """
+    records = [json.loads(l) for l in text.splitlines() if l.strip()]
+    nets = []
+    seen = {r[1] for r in records if r[0] == "NET" and len(r) > 1}
+
+    for rec in records:
+        rtype = rec[0]
+        if (
+            rtype == "RULE"
+            and len(rec) > 4
+            and isinstance(rec[4], list)
+            and len(rec[4]) > 1
+            and isinstance(rec[4][1], dict)
+        ):
+            sub = next(iter(rec[4][1].values()), None)
+            if sub is not None:
+                if rec[1] == "1":  # clearance matrix: table goes at index 1
+                    rec[4] = [rec[4][0], sub]
+                elif rec[1] == "3":  # track width: [units, min, opt, max]
+                    rec[4] = [rec[4][0], *sub]
+        idx = EPCB_NET_FIELD.get(rtype)
+        if idx is not None and len(rec) > idx and isinstance(rec[idx], str):
+            if rec[idx] and rec[idx] not in seen:
+                seen.add(rec[idx])
+                nets.append(rec[idx])
+
+    # NET records must precede first use: inject after the leading header run
+    split = 0
+    while split < len(records) and records[split][0] in EPCB_HEADER_TYPES:
+        split += 1
+    records[split:split] = [["NET", n] for n in nets]
+
+    return "\n".join(
+        json.dumps(r, separators=(",", ":"), ensure_ascii=False) for r in records
+    )
+
+
+def normalize_epro(src: Path, dst: Path) -> dict:
+    """Repack an .epro so KiCad's importer accepts it.
+
+    - Normalizes line endings in all JSON Lines documents: CR/LF endings in
+      some exports crash KiCad's parser (std::out_of_range).
+    - Applies fix_epcb() to PCB documents (new-format RULE/NET compat).
+
+    Returns the parsed project.json.
     """
     project = {}
     with zipfile.ZipFile(src) as zin, zipfile.ZipFile(dst, "w") as zout:
@@ -88,7 +150,10 @@ def normalize_epro(src: Path, dst: Path) -> dict:
                 (".esch", ".epcb", ".esym", ".efoo", ".json")
             ):
                 text = data.decode("utf-8", errors="replace")
-                data = "\n".join(text.splitlines()).encode("utf-8")
+                text = "\n".join(text.splitlines())
+                if item.filename.endswith(".epcb"):
+                    text = fix_epcb(text)
+                data = text.encode("utf-8")
             if item.filename == "project.json":
                 project = json.loads(data)
             zout.writestr(item, data)
@@ -155,6 +220,10 @@ Converted with epro2kicad: https://github.com/enkhbold470/epro2kicad
 """
 
 
+def safe_name(name: str) -> str:
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(
         prog="epro2kicad", description=__doc__.splitlines()[0]
@@ -175,22 +244,33 @@ def main() -> None:
         fixed = Path(tmp) / "normalized.epro"
         project = normalize_epro(args.epro, fixed)
 
-        pcbs = project.get("pcbs", {})
-        boards = project.get("boards", {})
+        pcbs = project.get("pcbs", {})  # pcb_id -> pcb name
+        boards = project.get("boards", {})  # board name -> {schematic, pcb}
         name = next(iter(boards), None) or args.epro.stem
-        name = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
-        pcb_id = next(iter(pcbs), "") if len(pcbs) == 1 else ""
+        name = safe_name(name)
 
         if not pcbs:
             sys.exit("error: this .epro contains no PCB")
 
+        # The board-linked PCB becomes <project>.kicad_pcb; any standalone
+        # PCBs (panels etc.) convert alongside it under their own names.
+        # Always pass an explicit pcb_id: with several PCBs and no id,
+        # KiCad tries to open a chooser dialog and aborts headlessly.
+        board_info = next(iter(boards.values()), {})
+        main_pcb_id = board_info.get("pcb") or next(iter(pcbs))
+
         outdir = args.output or Path(f"{name}_kicad")
         outdir.mkdir(parents=True, exist_ok=True)
 
-        print(f"converting PCB {pcb_id or '(auto)'} ...")
-        out_pcb = outdir / f"{name}.kicad_pcb"
-        fps, tracks, nets = convert_pcb(kicad_py, fixed, out_pcb, pcb_id)
-        print(f"  footprints: {fps}  tracks: {tracks}  nets: {nets}")
+        fps = tracks = nets = 0
+        for pcb_id, pcb_name in pcbs.items():
+            out_name = name if pcb_id == main_pcb_id else safe_name(pcb_name)
+            print(f"converting PCB {pcb_name} ({pcb_id}) ...")
+            out_pcb = outdir / f"{out_name}.kicad_pcb"
+            f, t, n = convert_pcb(kicad_py, fixed, out_pcb, pcb_id)
+            print(f"  footprints: {f}  tracks: {t}  nets: {n}")
+            if pcb_id == main_pcb_id:
+                fps, tracks, nets = f, t, n
 
         pro = dict(KICAD_PRO_TEMPLATE)
         pro["meta"] = {"filename": f"{name}.kicad_pro", "version": 3}

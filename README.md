@@ -38,6 +38,17 @@ survived the round trip.*
   outline, silkscreen, all via KiCad's own EasyEDA Pro parser
 - ✅ **Fixes broken exports** — normalizes line endings that crash KiCad's
   importer (`std::out_of_range: map::at` — if you've seen it, this is why)
+- ✅ **Fixes new-format exports (EasyEDA 2.2+)** — flattens new-style design
+  rules that abort KiCad 8/9 with `type must be number, but is array`
+  ([kicad#24303](https://gitlab.com/kicad/code/kicad/-/work_items/24303)) and
+  restores the `NET` records newer exports dropped (without them, KiCad 9
+  imports every pad and track as `<no net>`)
+- ✅ **Multi-PCB projects** — converts every PCB (panels, variants); headless
+  KiCad would otherwise abort trying to open a chooser dialog
+- ✅ **Web version** — [`docs/`](docs/) is a client-side GitHub Pages app that
+  repairs and packages `.epro` files in the browser (nothing is uploaded);
+  final import is one GUI step in KiCad, since KiCad's C++ importer can't run
+  in a browser
 - ✅ **KiCad project scaffold** — generates a `.kicad_pro` so the output opens
   as a proper project
 - ✅ **Zip output** — `--zip` produces a ready-to-share archive with the
