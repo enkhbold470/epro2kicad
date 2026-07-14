@@ -5,6 +5,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org)
 [![KiCad 8/9/10](https://img.shields.io/badge/KiCad-8%20%7C%209%20%7C%2010-314cb0.svg)](https://kicad.org)
+[![Live demo](https://img.shields.io/badge/live%20demo-in%20your%20browser-1a7f37.svg)](https://enkhbold470.github.io/epro2kicad/)
+
+> 🌐 **[Try it in your browser →](https://enkhbold470.github.io/epro2kicad/)** —
+> drop in a `.epro`, get a repaired KiCad-ready zip back. Nothing is uploaded.
+> For fully headless `.kicad_pcb` output, use the command-line tool below.
 
 KiCad ships an excellent native EasyEDA Pro importer — but it's buried in the
 GUI. `epro2kicad` drives that same importer headlessly through KiCad's bundled
@@ -45,7 +50,8 @@ survived the round trip.*
   imports every pad and track as `<no net>`)
 - ✅ **Multi-PCB projects** — converts every PCB (panels, variants); headless
   KiCad would otherwise abort trying to open a chooser dialog
-- ✅ **Web version** — [`docs/`](docs/) is a client-side GitHub Pages app that
+- ✅ **Web version** — a client-side app
+  ([live](https://enkhbold470.github.io/epro2kicad/) · [source](docs/)) that
   repairs and packages `.epro` files in the browser (nothing is uploaded);
   final import is one GUI step in KiCad, since KiCad's C++ importer can't run
   in a browser
