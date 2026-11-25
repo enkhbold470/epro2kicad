@@ -170,7 +170,7 @@ def normalize_epro(src: Path, dst: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 CONVERT_SNIPPET = r"""
-import sys, wx, pcbnew
+import os, sys, wx, pcbnew
 app = wx.App()
 epro, out, pcb_id = sys.argv[1], sys.argv[2], sys.argv[3]
 props = None
@@ -182,7 +182,10 @@ stats = (len(board.GetFootprints()), len(board.GetTracks()), board.GetNetCount()
 # NOTE: use PCB_IO_MGR.Save, not SaveBoard -- SaveBoard touches project
 # settings and can crash outside a full KiCad session.
 pcbnew.PCB_IO_MGR.Save(pcbnew.PCB_IO_MGR.KICAD_SEXP, out, board)
-print("STATS %d %d %d" % stats)
+print("STATS %d %d %d" % stats, flush=True)
+# Skip interpreter shutdown: KiCad/wx atexit handlers can open a modal
+# dialog on macOS that never returns headlessly, hanging the conversion.
+os._exit(0)
 """
 
 
