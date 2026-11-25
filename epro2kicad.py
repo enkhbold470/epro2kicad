@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""epro2kicad — convert EasyEDA Pro (.epro) projects to a KiCad-ready zip.
+"""epro2kicad — convert EasyEDA Pro (.epro / .epro2) projects to a KiCad-ready zip.
 
 Uses KiCad's own native EasyEDA Pro importer through its bundled Python
 (pcbnew) API, so the PCB conversion quality is identical to KiCad's GUI
@@ -7,6 +7,10 @@ Uses KiCad's own native EasyEDA Pro importer through its bundled Python
 
 Usage:
     python3 epro2kicad.py MyProject.epro [-o output_dir] [--zip]
+    python3 epro2kicad.py MyProject.epro2 --board "My Board"
+
+EasyEDA Pro 3.x .epro2 exports are first rewritten into the older .epro
+layout that KiCad's importer reads (see epro2_compat.py).
 
 Requirements:
     - KiCad 8/9/10 installed (macOS: KiCad.app; Linux: kicad packages)
@@ -27,7 +31,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 # ---------------------------------------------------------------------------
 # KiCad discovery
@@ -220,6 +224,15 @@ Converted with epro2kicad: https://github.com/enkhbold470/epro2kicad
 """
 
 
+def is_epro2(path: Path) -> bool:
+    """EasyEDA Pro 3.x exports hold a single .epru document instead of per-file docs."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            return any(n.endswith(".epru") for n in z.namelist())
+    except zipfile.BadZipFile:
+        return False
+
+
 def safe_name(name: str) -> str:
     return "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
 
@@ -228,7 +241,8 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         prog="epro2kicad", description=__doc__.splitlines()[0]
     )
-    ap.add_argument("epro", type=Path, help="EasyEDA Pro .epro project file")
+    ap.add_argument("epro", type=Path, help="EasyEDA Pro .epro or .epro2 project file")
+    ap.add_argument("--board", help="board title to treat as the main PCB (default: first)")
     ap.add_argument("-o", "--output", type=Path, help="output directory")
     ap.add_argument("--zip", action="store_true", help="also produce a .zip")
     ap.add_argument("--version", action="version", version=__version__)
@@ -241,8 +255,17 @@ def main() -> None:
     print(f"using KiCad python: {kicad_py}")
 
     with tempfile.TemporaryDirectory() as tmp:
+        source = args.epro
+        if is_epro2(source):
+            from epro2_compat import epro2_to_epro
+
+            source = Path(tmp) / "from_epro2.epro"
+            found = epro2_to_epro(args.epro, source)
+            print("EasyEDA Pro 3.x (.epro2) project; PCBs found:")
+            for b in found:
+                print(f"  {b['title']} ({b['uuid']}) board: {b['board'] or '-'}")
         fixed = Path(tmp) / "normalized.epro"
-        project = normalize_epro(args.epro, fixed)
+        project = normalize_epro(source, fixed)
 
         pcbs = project.get("pcbs", {})  # pcb_id -> pcb name
         boards = project.get("boards", {})  # board name -> {schematic, pcb}
@@ -256,7 +279,13 @@ def main() -> None:
         # PCBs (panels etc.) convert alongside it under their own names.
         # Always pass an explicit pcb_id: with several PCBs and no id,
         # KiCad tries to open a chooser dialog and aborts headlessly.
-        board_info = next(iter(boards.values()), {})
+        if args.board:
+            if args.board not in boards:
+                sys.exit(f"error: no board named {args.board!r}; boards: {list(boards)}")
+            name = safe_name(args.board)
+            board_info = boards[args.board]
+        else:
+            board_info = next(iter(boards.values()), {})
         main_pcb_id = board_info.get("pcb") or next(iter(pcbs))
 
         outdir = args.output or Path(f"{name}_kicad")
