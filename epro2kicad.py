@@ -7,6 +7,7 @@ Uses KiCad's own native EasyEDA Pro importer through its bundled Python
 
 Usage:
     python3 epro2kicad.py MyProject.epro [-o output_dir] [--zip]
+    python3 epro2kicad.py MyProject.epro2 --list
     python3 epro2kicad.py MyProject.epro2 --board "My Board"
 
 EasyEDA Pro 3.x .epro2 exports are first rewritten into the older .epro
@@ -31,7 +32,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 # ---------------------------------------------------------------------------
 # KiCad discovery
@@ -233,6 +234,29 @@ def is_epro2(path: Path) -> bool:
         return False
 
 
+def list_pcbs(project: dict) -> list:
+    """Every PCB in a (normalized) project.json: uuid, title, owning board."""
+    board_of = {v.get("pcb"): k for k, v in project.get("boards", {}).items()}
+    return [
+        {"uuid": uuid, "title": title, "board": board_of.get(uuid, "")}
+        for uuid, title in project.get("pcbs", {}).items()
+    ]
+
+
+def pick_pcb(project: dict, wanted: str):
+    """Resolve --board: a board title first, else a PCB title or uuid.
+
+    Returns (pcb_id, output name) or None.
+    """
+    boards = project.get("boards", {})
+    if wanted in boards and boards[wanted].get("pcb"):
+        return boards[wanted]["pcb"], wanted
+    for p in list_pcbs(project):
+        if wanted in (p["uuid"], p["title"]):
+            return p["uuid"], p["board"] or p["title"]
+    return None
+
+
 def safe_name(name: str) -> str:
     return "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
 
@@ -242,7 +266,13 @@ def main() -> None:
         prog="epro2kicad", description=__doc__.splitlines()[0]
     )
     ap.add_argument("epro", type=Path, help="EasyEDA Pro .epro or .epro2 project file")
-    ap.add_argument("--board", help="board title to treat as the main PCB (default: first)")
+    ap.add_argument("--list", action="store_true",
+                    help="list the PCBs in the project (title, uuid, board) and exit")
+    ap.add_argument("--board",
+                    help="board title (or PCB title/uuid) to convert; only that PCB "
+                         "is converted unless --all is given")
+    ap.add_argument("--all", action="store_true",
+                    help="with --board: still convert every other PCB (panels etc.)")
     ap.add_argument("-o", "--output", type=Path, help="output directory")
     ap.add_argument("--zip", action="store_true", help="also produce a .zip")
     ap.add_argument("--version", action="version", version=__version__)
@@ -251,48 +281,59 @@ def main() -> None:
     if not args.epro.is_file():
         sys.exit(f"error: {args.epro} not found")
 
-    kicad_py = find_kicad_python()
-    print(f"using KiCad python: {kicad_py}")
-
     with tempfile.TemporaryDirectory() as tmp:
         source = args.epro
         if is_epro2(source):
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
             from epro2_compat import epro2_to_epro
 
+            print("EasyEDA Pro 3.x (.epro2) project")
             source = Path(tmp) / "from_epro2.epro"
-            found = epro2_to_epro(args.epro, source)
-            print("EasyEDA Pro 3.x (.epro2) project; PCBs found:")
-            for b in found:
-                print(f"  {b['title']} ({b['uuid']}) board: {b['board'] or '-'}")
+            epro2_to_epro(args.epro, source)
         fixed = Path(tmp) / "normalized.epro"
         project = normalize_epro(source, fixed)
 
         pcbs = project.get("pcbs", {})  # pcb_id -> pcb name
         boards = project.get("boards", {})  # board name -> {schematic, pcb}
-        name = next(iter(boards), None) or args.epro.stem
-        name = safe_name(name)
-
         if not pcbs:
-            sys.exit("error: this .epro contains no PCB")
+            sys.exit("error: this project contains no PCB")
 
-        # The board-linked PCB becomes <project>.kicad_pcb; any standalone
-        # PCBs (panels etc.) convert alongside it under their own names.
+        if args.list:
+            print(f"{len(pcbs)} PCB(s):")
+            for p in list_pcbs(project):
+                board = f"board: {p['board']}" if p["board"] else "no board (panel/standalone)"
+                print(f"  {p['title']}  uuid={p['uuid']}  {board}")
+            return
+
+        # The selected (or first board-linked) PCB becomes <name>.kicad_pcb;
+        # other PCBs (panels etc.) convert alongside it under their own names
+        # unless --board narrowed the run to one PCB.
         # Always pass an explicit pcb_id: with several PCBs and no id,
         # KiCad tries to open a chooser dialog and aborts headlessly.
         if args.board:
-            if args.board not in boards:
-                sys.exit(f"error: no board named {args.board!r}; boards: {list(boards)}")
-            name = safe_name(args.board)
-            board_info = boards[args.board]
+            picked = pick_pcb(project, args.board)
+            if not picked:
+                sys.exit(
+                    f"error: no board or PCB named {args.board!r}; "
+                    f"run with --list to see them"
+                )
+            main_pcb_id, name = picked
         else:
             board_info = next(iter(boards.values()), {})
-        main_pcb_id = board_info.get("pcb") or next(iter(pcbs))
+            main_pcb_id = board_info.get("pcb") or next(iter(pcbs))
+            name = next(iter(boards), None) or args.epro.stem
+        name = safe_name(name)
+        todo = {k: v for k, v in pcbs.items()
+                if k == main_pcb_id or not args.board or args.all}
+
+        kicad_py = find_kicad_python()
+        print(f"using KiCad python: {kicad_py}")
 
         outdir = args.output or Path(f"{name}_kicad")
         outdir.mkdir(parents=True, exist_ok=True)
 
         fps = tracks = nets = 0
-        for pcb_id, pcb_name in pcbs.items():
+        for pcb_id, pcb_name in todo.items():
             out_name = name if pcb_id == main_pcb_id else safe_name(pcb_name)
             print(f"converting PCB {pcb_name} ({pcb_id}) ...")
             out_pcb = outdir / f"{out_name}.kicad_pcb"
@@ -300,6 +341,8 @@ def main() -> None:
             print(f"  footprints: {f}  tracks: {t}  nets: {n}")
             if pcb_id == main_pcb_id:
                 fps, tracks, nets = f, t, n
+        if len(todo) < len(pcbs):
+            print(f"skipped {len(pcbs) - len(todo)} other PCB(s); pass --all to convert them")
 
         pro = dict(KICAD_PRO_TEMPLATE)
         pro["meta"] = {"filename": f"{name}.kicad_pro", "version": 3}
