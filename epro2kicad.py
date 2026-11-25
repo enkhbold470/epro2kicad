@@ -209,6 +209,16 @@ KICAD_PRO_TEMPLATE = {
     "text_variables": {},
 }
 
+SCHEMATIC_NOTE = """\
+Schematic: KiCad imports EasyEDA Pro schematics only through its GUI.
+Open KiCad -> File -> Import Non-KiCad Project -> EasyEDA (JLCEDA) Pro
+Project -> select the included .epro. Done."""
+
+SCHEMATIC_NOTE_EPRO2 = """\
+Schematic: not converted. This is an EasyEDA Pro 3.x (.epro2) project;
+epro2kicad converts its PCB only (.epro2 schematic pages are not
+supported yet), and KiCad's own importer reads only the older .epro."""
+
 README_TEMPLATE = """\
 {name} — converted from EasyEDA Pro to KiCad
 ============================================
@@ -217,9 +227,7 @@ README_TEMPLATE = """\
 - {name}.kicad_pro : KiCad project file
 - {epro}           : original EasyEDA Pro project
 
-Schematic: KiCad imports EasyEDA Pro schematics only through its GUI.
-Open KiCad -> File -> Import Non-KiCad Project -> EasyEDA (JLCEDA) Pro
-Project -> select the included .epro. Done.
+{schematic}
 
 Converted with epro2kicad: https://github.com/enkhbold470/epro2kicad
 """
@@ -283,7 +291,8 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         source = args.epro
-        if is_epro2(source):
+        epro2 = is_epro2(source)
+        if epro2:
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             from epro2_compat import epro2_to_epro
 
@@ -351,7 +360,8 @@ def main() -> None:
         shutil.copy(args.epro, outdir / args.epro.name)
         (outdir / "README.txt").write_text(
             README_TEMPLATE.format(
-                name=name, fps=fps, tracks=tracks, nets=nets, epro=args.epro.name
+                name=name, fps=fps, tracks=tracks, nets=nets, epro=args.epro.name,
+                schematic=SCHEMATIC_NOTE_EPRO2 if epro2 else SCHEMATIC_NOTE,
             )
         )
 
