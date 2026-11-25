@@ -43,8 +43,11 @@ survived the round trip.*
   ([kicad#24303](https://gitlab.com/kicad/code/kicad/-/work_items/24303)) and
   restores the `NET` records newer exports dropped (without them, KiCad 9
   imports every pad and track as `<no net>`)
-- ✅ **Multi-PCB projects** — converts every PCB (panels, variants); headless
-  KiCad would otherwise abort trying to open a chooser dialog
+- ✅ **EasyEDA Pro 3.x (`.epro2`)** — rewrites the new single-file format
+  into the layout KiCad's importer reads (see [below](#easyeda-pro-3x-epro2))
+- ✅ **Multi-PCB projects** — `--list` shows every PCB, `--board` picks one;
+  by default every PCB (panels, variants) is converted. Headless KiCad would
+  otherwise abort trying to open a chooser dialog
 - ✅ **Web version** — [`docs/`](docs/) is a client-side GitHub Pages app that
   repairs and packages `.epro` files in the browser (nothing is uploaded);
   final import is one GUI step in KiCad, since KiCad's C++ importer can't run
@@ -55,6 +58,8 @@ survived the round trip.*
   original `.epro` and instructions included
 - ✅ **Zero dependencies** — Python stdlib only; uses the Python bundled with
   your KiCad install
+- ✅ **Claude Code skill** — install it as a plugin and ask Claude to convert
+  your file (see [Install as a Claude skill](#install-as-a-claude-skill))
 
 ## Install
 
@@ -72,21 +77,90 @@ If KiCad's Python isn't auto-detected, point at it explicitly:
 export KICAD_PYTHON="/Applications/KiCad/KiCad.app/Contents/Frameworks/Python.framework/Versions/Current/bin/python3"
 ```
 
+## Install as a Claude skill
+
+The repo is also a [Claude Code](https://claude.com/claude-code) plugin with
+an `epro2kicad` skill. Inside Claude Code:
+
+```
+/plugin marketplace add enkhbold470/epro2kicad
+/plugin install epro2kicad@epro2kicad
+```
+
+(or from a shell: `claude plugin marketplace add enkhbold470/epro2kicad` then
+`claude plugin install epro2kicad@epro2kicad`). Then just say *"convert
+~/Downloads/MyProject.epro2 to KiCad"*: Claude lists the boards, asks which
+one if there are several, converts it, and checks the result with
+`kicad-cli`. KiCad ≥ 8 must be installed on the machine.
+
 ## Getting your .epro out of EasyEDA Pro
 
 In EasyEDA Pro: **File → Export → EasyEDA Pro (Professional) Project** — that
-`.epro` file is what this tool eats.
+`.epro` (or `.epro2`, from EasyEDA Pro 3.x) file is what this tool eats.
 
 ## Usage
 
 ```
-python3 epro2kicad.py PROJECT.epro [-o OUTPUT_DIR] [--zip]
+python3 epro2kicad.py PROJECT.epro[2] [--list] [--board NAME [--all]] [-o OUTPUT_DIR] [--zip]
 
-  PROJECT.epro   EasyEDA Pro project export
+  PROJECT        EasyEDA Pro project export (.epro or .epro2)
+  --list         list the PCBs in the project (title, uuid, board) and exit
+  --board NAME   convert only this board; NAME is a board title, or a PCB
+                 title/uuid for PCBs that belong to no board
+  --all          with --board: also convert every other PCB
   -o, --output   output directory (default: <name>_kicad/)
   --zip          also produce <name>_kicad.zip
   --version      print version
 ```
+
+Without `--board`, every PCB is converted and the first board's PCB becomes
+`<name>.kicad_pcb`; the others are written under their own PCB titles.
+
+Projects often hold more than one PCB (old revisions, panelized copies), so
+start with `--list`:
+
+```
+$ python3 epro2kicad.py ProPrj_badge.epro2 --list
+EasyEDA Pro 3.x (.epro2) project
+4 PCB(s):
+  PCB2  uuid=6d8ad368ef4a548f  board: badge-touchscreen
+  PCB1  uuid=bcc5d3c035c84466  board: Board1
+  PCB_Tinker2_v5.3_PANEL_JLC  uuid=84e161c30e38a67c  no board (panel/standalone)
+  PCB_Tinker2_v5.3  uuid=ce89e677e117c9b1  no board (panel/standalone)
+
+$ python3 epro2kicad.py ProPrj_badge.epro2 --board badge-touchscreen
+EasyEDA Pro 3.x (.epro2) project
+using KiCad python: /Applications/KiCad/KiCad.app/.../python3
+converting PCB PCB2 (6d8ad368ef4a548f) ...
+  footprints: 72  tracks: 1356  nets: 52
+skipped 3 other PCB(s); pass --all to convert them
+done: badge-touchscreen_kicad/
+```
+
+## EasyEDA Pro 3.x (.epro2)
+
+EasyEDA Pro 3.x exports `.epro2` files in a new format that KiCad (up to
+10.0.x) cannot import: a zip holding `project2.json` and a single `.epru`
+file with every document (PCBs, footprints, devices, symbols, schematic
+pages) back to back, one record per line as
+`{"type","ticket","id"}||{named fields}|`. KiCad's importer reads the older
+`.epro` layout: a `project.json` plus one file per document, each record a
+positional JSON array.
+
+`epro2kicad` detects `.epro2` files automatically and rewrites their PCB and
+footprint documents into the old layout (`epro2_compat.py`) before handing
+them to KiCad. What carries over: footprints, pads, tracks, arcs, vias,
+zones, board outline, nets and silkscreen text. Zones are refilled by KiCad
+when you open the board.
+
+Limits:
+
+- **Schematics are not converted** from `.epro2` yet: the schematic pages
+  are dropped, and KiCad's GUI importer reads only the older `.epro`
+  layout, so the "import the schematic in the GUI" step below does not
+  apply to `.epro2` files. The output `README.txt` says so.
+- Design rules (RULE records), dimensions and embedded images are dropped;
+  KiCad uses its own defaults.
 
 ## What about schematics?
 
@@ -101,6 +175,8 @@ That imports the schematic (and PCB) in about 30 seconds.
 
 ## How it works
 
+0. **Upgrade `.epro2`** (EasyEDA Pro 3.x only) — `epro2_compat.py` rewrites
+   the single `.epru` document into a per-document `.epro`.
 1. **Normalize** — repacks the `.epro` zip with clean `\n` line endings in
    every JSON Lines document (`.esch`, `.epcb`, `.esym`, `.efoo`). Some
    EasyEDA exports carry CR/LF endings that hard-crash KiCad's parser.
@@ -115,7 +191,7 @@ That imports the schematic (and PCB) in about 30 seconds.
 
 | Platform | Status |
 |----------|--------|
-| macOS (KiCad.app) | ✅ tested (KiCad 10.0.4) |
+| macOS (KiCad.app) | ✅ tested (KiCad 10.0.4, 10.0.6) |
 | Linux (system KiCad) | ✅ should work — pcbnew is on the system Python |
 | Windows | ⚠️ untested — set `KICAD_PYTHON` to KiCad's `python.exe` |
 
@@ -124,6 +200,7 @@ That imports the schematic (and PCB) in about 30 seconds.
 Issues and PRs welcome. Ideas that would be great to have:
 
 - Headless schematic conversion (requires upstream KiCad API work)
+- `.epro2` schematic pages
 - Windows testing
 - Batch mode for multiple `.epro` files
 

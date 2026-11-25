@@ -1,0 +1,13 @@
+{
+  "name": "epro2kicad",
+  "version": "1.3.0",
+  "description": "Convert EasyEDA Pro (.epro / .epro2) projects to KiCad boards headlessly, using KiCad's own importer.",
+  "author": {
+    "name": "Enkhbold Ganbold",
+    "url": "https://github.com/enkhbold470"
+  },
+  "homepage": "https://github.com/enkhbold470/epro2kicad",
+  "repository": "https://github.com/enkhbold470/epro2kicad",
+  "license": "MIT",
+  "keywords": ["easyeda", "kicad", "pcb", "converter", "epro", "epro2"]
+}
